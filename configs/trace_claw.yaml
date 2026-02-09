@@ -1,0 +1,42 @@
+# trace_claw configuration file
+# Mode: "local" (file-based) or "online" (OpenTelemetry + Prometheus + Grafana)
+mode: local
+
+# OpenTelemetry exporter settings (used in online mode)
+otel:
+  endpoint: "http://localhost:4318"
+  service_name: "trace-claw-resources"
+  headers: {}
+  export_interval_ms: 10000
+
+# System resource collector settings (modular, reusable)
+collector:
+  enabled: true
+  interval_seconds: 2.0
+  cpu: true
+  memory: true
+  network: true
+  network_interface: ""  # empty = all non-loopback interfaces
+  process_name: "node"   # process to filter for (OpenClaw runs on Node.js)
+
+# Local file exporter (always active in local mode)
+local_exporter:
+  enabled: true
+  output_dir: "./trace_data"
+  format: "jsonl"
+
+# OpenClaw diagnostics configuration reference
+openclaw:
+  config_path: "~/.openclaw/openclaw.json"
+  otel_endpoint: "http://localhost:4318"
+  service_name: "openclaw-gateway"
+  traces: true
+  metrics: true
+  logs: true
+  sample_rate: 1.0
+  flush_interval_ms: 10000
+
+# Analyzer settings
+analyzer:
+  trace_dir: "./trace_data"
+  summary_output: "./trace_data/summary"

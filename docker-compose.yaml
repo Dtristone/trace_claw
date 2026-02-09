@@ -1,0 +1,64 @@
+# trace_claw – Online version with OpenTelemetry, Prometheus, Grafana, Jaeger
+#
+# Usage:
+#   docker compose up -d
+#
+# This starts:
+#   - OpenTelemetry Collector (receives OTLP from OpenClaw + trace_claw)
+#   - Prometheus (scrapes metrics from OTel Collector)
+#   - Grafana (dashboards for timeline and resource visualization)
+#   - Jaeger (distributed tracing UI)
+#
+# OpenClaw should be configured to export to http://<host>:4318 (OTLP/HTTP)
+# trace_claw collector should use the same endpoint for resource metrics
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./configs/otel-collector/otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4318:4318"   # OTLP HTTP receiver
+      - "8889:8889"   # Prometheus exporter
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    volumes:
+      - ./configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - otel-collector
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.1
+    volumes:
+      - ./configs/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./configs/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC (from OTel Collector)
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  grafana_data:
