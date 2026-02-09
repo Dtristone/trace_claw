@@ -71,7 +71,7 @@ def print_workflow_report(workflow_data):
         try:
             dt = datetime.fromisoformat(timestamp)
             time_str = dt.strftime('%H:%M:%S.%f')[:-3]
-        except:
+        except (ValueError, TypeError):
             time_str = timestamp
         
         print(f"[{time_str}] {event_type:20s} {description}")
