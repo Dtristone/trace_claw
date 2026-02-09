@@ -14,7 +14,8 @@ from trace_claw.config import (
 
 def test_load_config_defaults():
     """Loading from a non-existent file returns defaults."""
-    cfg = load_config("/tmp/nonexistent_trace_claw.yaml")
+    import tempfile
+    cfg = load_config(Path(tempfile.gettempdir()) / "nonexistent_trace_claw_test.yaml")
     assert isinstance(cfg, TraceClawConfig)
     assert cfg.mode == "local"
     assert cfg.collector.enabled is True
