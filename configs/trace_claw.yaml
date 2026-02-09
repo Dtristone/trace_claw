@@ -18,6 +18,7 @@ collector:
   network: true
   network_interface: ""  # empty = all non-loopback interfaces
   process_name: "node"   # process to filter for (OpenClaw runs on Node.js)
+  process_filter_enabled: true  # enable per-process CPU/memory/IO tracing
 
 # Local file exporter (always active in local mode)
 local_exporter:

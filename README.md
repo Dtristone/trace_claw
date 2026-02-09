@@ -6,9 +6,84 @@ trace_claw provides:
 
 - **Full processing traces** – LLM input/output tokens, latency, cost, status; tool/webhook details; session and queue lifecycle events, all captured via OpenClaw's built-in `diagnostics-otel` plugin.
 - **System resource collection** – Modular, configurable CPU / Memory / Network collectors that run alongside OpenClaw and export to OpenTelemetry (or local JSONL files). Designed for reuse in other projects.
+- **Per-process resource tracing** – Track CPU, memory (RSS/VMS), and I/O for a specific target process by name (e.g. `node` for OpenClaw). The collector resolves process names to PIDs automatically and handles restarts.
 - **Summary analysis** – Per-session and multi-session statistics (latency percentiles, token counts, cost, error rates, resource peaks).
 - **Unified timeline** – Aligns OpenClaw events and resource samples on a single time axis so you can correlate each stage's latency with its resource footprint.
 - **Local + Online modes** – Run everything locally (JSONL files + CLI analysis), or use the provided Docker Compose stack (OpenTelemetry Collector → Prometheus → Grafana + Jaeger).
+
+---
+
+## Architecture & Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        trace_claw system                           │
+│                                                                     │
+│  ┌──────────────┐    ┌──────────────────────────────────────────┐  │
+│  │   OpenClaw    │    │          CollectorManager                │  │
+│  │   Gateway     │    │                                          │  │
+│  │              │    │  ┌────────────┐  ┌───────────────┐       │  │
+│  │  diagnostics- │    │  │CpuCollector│  │MemoryCollector│       │  │
+│  │  otel plugin  │    │  └─────┬──────┘  └──────┬────────┘       │  │
+│  │       │       │    │        │                 │                │  │
+│  │       │       │    │  ┌─────┴──────┐  ┌──────┴────────┐       │  │
+│  │       ▼       │    │  │  Network   │  │   Process     │       │  │
+│  │   OTLP/HTTP   │    │  │  Collector │  │   Collector   │       │  │
+│  │   (traces,    │    │  └─────┬──────┘  └──────┬────────┘       │  │
+│  │    metrics,   │    │        │                 │                │  │
+│  │    logs)      │    │        ▼                 ▼                │  │
+│  └───────┬───────┘    │     MetricSamples (unified)              │  │
+│          │            │        │                                  │  │
+│          │            └────────┼──────────────────────────────────┘  │
+│          │                     │                                     │
+│          │            ┌────────┼──────────────────────┐              │
+│          │            │   Sinks (exporters)           │              │
+│          │            │  ┌─────▼──────┐ ┌────────────┐│              │
+│          │            │  │LocalExporter│ │OtelExporter││              │
+│          │            │  │  (JSONL)    │ │ (OTLP/HTTP)││              │
+│          │            │  └─────┬──────┘ └─────┬──────┘│              │
+│          │            └────────┼───────────────┼──────┘              │
+│          │                     │               │                     │
+│          ▼                     ▼               ▼                     │
+│  ┌───────────────┐    ┌──────────────┐  ┌──────────────┐            │
+│  │ OTel Collector │    │  JSONL files  │  │ OTel Collector│            │
+│  │  (receives     │    │  ./trace_data │  │  (receives    │            │
+│  │   OpenClaw     │    └──────┬───────┘  │   resources)  │            │
+│  │   telemetry)   │           │          └──────┬───────┘            │
+│  └───────┬───────┘           │                 │                     │
+│          │                    ▼                 │                     │
+│          │           ┌────────────────┐         │                     │
+│          │           │    Analyzer     │         │                     │
+│          │           │  ┌──────────┐  │         │                     │
+│          │           │  │  Parser  │  │         │                     │
+│          │           │  └────┬─────┘  │         │                     │
+│          │           │  ┌────▼─────┐  │         │                     │
+│          │           │  │ Summary  │  │         │                     │
+│          │           │  └────┬─────┘  │         │                     │
+│          │           │  ┌────▼─────┐  │         │                     │
+│          │           │  │ Timeline │  │         │                     │
+│          │           │  └──────────┘  │         │                     │
+│          │           └────────────────┘         │                     │
+│          ▼                                      ▼                     │
+│  ┌─────────────┐                     ┌─────────────────┐             │
+│  │ Prometheus   │                     │   Prometheus     │             │
+│  └──────┬──────┘                     └────────┬────────┘             │
+│         └──────────────┬──────────────────────┘                      │
+│                        ▼                                             │
+│               ┌─────────────────┐                                    │
+│               │     Grafana     │                                    │
+│               │   (dashboards)  │                                    │
+│               └─────────────────┘                                    │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Data flow summary
+
+1. **OpenClaw** emits diagnostic events (model usage, webhooks, messages, sessions) via its `diagnostics-otel` plugin over OTLP/HTTP.
+2. **trace_claw `collect`** runs alongside OpenClaw, collecting system-wide and per-process resource metrics at a configurable interval.
+3. **Exporters** write data to local JSONL files (local mode) and/or push to an OpenTelemetry Collector (online mode).
+4. **trace_claw `analyze`** reads JSONL files, parses OpenClaw events and resource samples, computes summaries, and generates a unified timeline.
+5. **Online stack** (Grafana + Prometheus + Jaeger) provides real-time dashboards and trace inspection.
 
 ---
 
@@ -50,6 +125,45 @@ trace-claw analyze --trace-dir ./trace_data
 ```
 
 Output includes a summary report and a unified timeline table in the terminal.
+
+---
+
+## Per-process resource tracing
+
+trace_claw can monitor a specific process by name (e.g. `node` for the OpenClaw gateway). Enable this in `trace_claw.yaml`:
+
+```yaml
+collector:
+  process_filter_enabled: true
+  process_name: "node"  # matches any process whose name or cmdline contains "node"
+```
+
+### How it works
+
+1. On each collection interval the `ProcessCollector` calls `find_pids_by_name(process_name)`.
+2. This scans `psutil.process_iter()` and returns every PID whose process name **or** first cmdline argument contains the target string (case-insensitive).
+3. For each matching PID, the collector records:
+   - `process.cpu.usage_percent` – CPU % used by this process
+   - `process.memory.rss_bytes` – Resident Set Size
+   - `process.memory.vms_bytes` – Virtual Memory Size
+   - `process.memory.usage_percent` – % of total system memory
+   - `process.io.read_bytes` / `process.io.write_bytes` – disk I/O (Linux)
+4. Every sample is tagged with `pid` and `process_name` labels.
+5. If the process restarts (new PID), the collector detects it automatically; stale cached entries are evicted.
+
+### Per-process metrics in analysis
+
+The analyzer summary includes:
+- `avg_process_cpu_percent` / `max_process_cpu_percent`
+- `avg_process_rss_bytes` / `max_process_rss_bytes`
+
+The timeline tags process metrics under the `process` category so they align with OpenClaw events on the same time axis.
+
+### Environment override
+
+```bash
+TRACE_CLAW_COLLECTOR_PROCESS=openclaw trace-claw collect
+```
 
 ---
 
@@ -96,6 +210,8 @@ collector:
   cpu: true
   memory: true
   network: true
+  process_filter_enabled: true   # enable per-process tracing
+  process_name: "node"           # target process to monitor
 
 otel:
   endpoint: "http://localhost:4318"
@@ -117,6 +233,7 @@ Environment variable overrides (prefix `TRACE_CLAW_`):
 | `TRACE_CLAW_MODE`              | `mode`                       |
 | `TRACE_CLAW_OTEL_ENDPOINT`    | `otel.endpoint`              |
 | `TRACE_CLAW_COLLECTOR_INTERVAL`| `collector.interval_seconds` |
+| `TRACE_CLAW_COLLECTOR_PROCESS` | `collector.process_name`     |
 
 ---
 
@@ -132,6 +249,69 @@ Commands:
   version          Print version
 ```
 
+### Examples
+
+```bash
+# Collect with default config (looks for trace_claw.yaml in current dir)
+trace-claw collect
+
+# Collect with custom config
+trace-claw -c configs/trace_claw.yaml collect
+
+# Analyze trace data
+trace-claw analyze --trace-dir ./trace_data
+
+# Analyze without rich table output (e.g. for piping)
+trace-claw analyze --trace-dir ./trace_data --no-table
+
+# Generate OpenClaw diagnostics config
+trace-claw generate-config -o openclaw.diagnostics.json
+
+# Print version
+trace-claw version
+```
+
+---
+
+## Key modules & functions
+
+### Collectors (`src/trace_claw/collector/`)
+
+| Module | Class | Key function | Description |
+|--------|-------|-------------|-------------|
+| `base.py` | `BaseCollector` | `collect() → list[MetricSample]` | Abstract interface; all collectors return `MetricSample` dataclasses |
+| `cpu.py` | `CpuCollector` | `collect()` | System-wide CPU % (total + per-core) and load averages |
+| `memory.py` | `MemoryCollector` | `collect()` | System RAM usage %, used/available/total bytes, swap % |
+| `network.py` | `NetworkCollector` | `collect()` | Per-interface bytes sent/received (total + rate) |
+| `process.py` | `ProcessCollector` | `collect()` | Per-process CPU %, RSS, VMS, memory %, I/O bytes |
+| `process.py` | — | `find_pids_by_name(name)` | Resolve process name → list of PIDs via `psutil.process_iter()` |
+| `manager.py` | `CollectorManager` | `start()` / `stop()` / `collect_once()` | Runs collectors on a background thread, dispatches samples to registered sinks |
+
+### Exporters (`src/trace_claw/exporter/`)
+
+| Module | Class | Key function | Description |
+|--------|-------|-------------|-------------|
+| `local.py` | `LocalExporter` | `export(samples)` | Writes metric samples to daily JSONL files |
+| `otel.py` | `OtelExporter` | `export(samples)` | Pushes metrics as OTel gauge observations via OTLP/HTTP |
+
+### Analyzer (`src/trace_claw/analyzer/`)
+
+| Module | Function | Description |
+|--------|----------|-------------|
+| `parser.py` | `parse_openclaw_log(path)` | Parse OpenClaw JSONL log → `list[OpenClawEvent]` |
+| `parser.py` | `parse_resource_file(path)` | Parse trace_claw JSONL → `list[ResourceSample]` |
+| `parser.py` | `load_trace_dir(dir)` | Scan directory, auto-classify files, return `(events, resources)` |
+| `summary.py` | `summarize_session(events, resources)` | Compute latency percentiles, token counts, cost, error rate, resource peaks (system + process) |
+| `summary.py` | `summarize_multi_session(sessions)` | Aggregate stats across multiple sessions |
+| `timeline.py` | `build_timeline(events, resources)` | Merge events + resources into a unified `TimelineEntry` list sorted by time |
+| `timeline.py` | `print_timeline(entries)` | Pretty-print to terminal with Rich |
+
+### Configuration (`src/trace_claw/config.py`)
+
+| Function | Description |
+|----------|-------------|
+| `load_config(path)` | Load YAML file → `TraceClawConfig` dataclass with env var overrides |
+
 ---
 
 ## OpenClaw diagnostic events captured
@@ -144,6 +324,8 @@ trace_claw leverages OpenClaw's `diagnostics-otel` extension which exports:
 
 **System resources** (collected by trace_claw): `system.cpu.usage_percent`, `system.cpu.load_avg_*`, `system.memory.usage_percent`, `system.memory.*_bytes`, `system.swap.usage_percent`, `system.network.bytes_*_total`, `system.network.bytes_*_rate`
 
+**Process resources** (collected by trace_claw): `process.cpu.usage_percent`, `process.memory.rss_bytes`, `process.memory.vms_bytes`, `process.memory.usage_percent`, `process.io.read_bytes`, `process.io.write_bytes`
+
 ---
 
 ## Project structure
@@ -154,10 +336,11 @@ trace_claw/
 │   ├── cli.py                  # CLI entry point
 │   ├── config.py               # YAML + env config loader
 │   ├── collector/              # Modular resource collectors
-│   │   ├── base.py             # BaseCollector interface
-│   │   ├── cpu.py              # CPU metrics
-│   │   ├── memory.py           # Memory metrics
+│   │   ├── base.py             # BaseCollector interface + MetricSample
+│   │   ├── cpu.py              # System CPU metrics
+│   │   ├── memory.py           # System memory metrics
 │   │   ├── network.py          # Network I/O metrics
+│   │   ├── process.py          # Per-process CPU/memory/IO metrics
 │   │   └── manager.py          # Orchestrates collectors + sinks
 │   ├── exporter/               # Data exporters
 │   │   ├── base.py             # BaseExporter interface
@@ -168,14 +351,31 @@ trace_claw/
 │       ├── summary.py          # Session/multi-session statistics
 │       └── timeline.py         # Unified timeline builder
 ├── configs/
-│   ├── trace_claw.yaml         # Main config
+│   ├── trace_claw.yaml         # Main config (with process filter settings)
 │   ├── openclaw/               # OpenClaw diagnostics config
 │   ├── otel-collector/         # OTel Collector config
 │   ├── prometheus/             # Prometheus scrape config
 │   └── grafana/                # Grafana provisioning + dashboards
 ├── docker-compose.yaml         # Online observability stack
-├── tests/                      # pytest test suite
+├── tests/
+│   ├── test_config.py          # Config loading tests
+│   ├── test_collector.py       # Collector unit tests
+│   ├── test_analyzer.py        # Analyzer unit tests
+│   └── test_e2e.py             # End-to-end functional tests
 └── pyproject.toml              # Python packaging
+```
+
+## Testing
+
+```bash
+# Run all tests
+python -m pytest tests/ -v
+
+# Run only e2e tests
+python -m pytest tests/test_e2e.py -v
+
+# Run only process collector tests
+python -m pytest tests/test_e2e.py::TestProcessCollector -v
 ```
 
 ## License

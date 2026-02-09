@@ -77,6 +77,9 @@ def build_timeline(
         "system.memory": "memory",
         "system.swap": "memory",
         "system.network": "network",
+        "process.cpu": "process",
+        "process.memory": "process",
+        "process.io": "process",
     }
 
     for sample in resources:

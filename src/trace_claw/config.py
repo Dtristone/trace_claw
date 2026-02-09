@@ -31,6 +31,7 @@ class CollectorConfig:
     network: bool = True
     network_interface: str = ""
     process_name: str = "node"
+    process_filter_enabled: bool = False
 
 
 @dataclass

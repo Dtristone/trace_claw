@@ -39,6 +39,10 @@ class SessionSummary:
     max_memory_percent: float = 0.0
     avg_network_recv_rate: float = 0.0
     max_network_recv_rate: float = 0.0
+    avg_process_cpu_percent: float = 0.0
+    max_process_cpu_percent: float = 0.0
+    avg_process_rss_bytes: float = 0.0
+    max_process_rss_bytes: float = 0.0
 
 
 @dataclass
@@ -73,46 +77,47 @@ def summarize_session(
 ) -> SessionSummary:
     """Compute summary statistics for a single session."""
     summary = SessionSummary(session_id=session_id or "default")
-    if not events:
+    if not events and not resources:
         return summary
 
-    summary.event_count = len(events)
-    summary.start_time = events[0].timestamp
-    summary.end_time = events[-1].timestamp
-    summary.total_duration_ms = (summary.end_time - summary.start_time) * 1000
+    if events:
+        summary.event_count = len(events)
+        summary.start_time = events[0].timestamp
+        summary.end_time = events[-1].timestamp
+        summary.total_duration_ms = (summary.end_time - summary.start_time) * 1000
 
-    latencies: list[float] = []
-    models: set[str] = set()
-    providers: set[str] = set()
+        latencies: list[float] = []
+        models: set[str] = set()
+        providers: set[str] = set()
 
-    for evt in events:
-        if evt.event_type == "model.usage":
-            summary.model_calls += 1
-            summary.total_tokens_input += evt.tokens_input
-            summary.total_tokens_output += evt.tokens_output
-            summary.total_tokens += evt.tokens_total
-            summary.total_cost_usd += evt.cost_usd
-            if evt.duration_ms > 0:
-                latencies.append(evt.duration_ms)
-            if evt.model:
-                models.add(evt.model)
-            if evt.provider:
-                providers.add(evt.provider)
-        if evt.status == "error":
-            summary.error_count += 1
+        for evt in events:
+            if evt.event_type == "model.usage":
+                summary.model_calls += 1
+                summary.total_tokens_input += evt.tokens_input
+                summary.total_tokens_output += evt.tokens_output
+                summary.total_tokens += evt.tokens_total
+                summary.total_cost_usd += evt.cost_usd
+                if evt.duration_ms > 0:
+                    latencies.append(evt.duration_ms)
+                if evt.model:
+                    models.add(evt.model)
+                if evt.provider:
+                    providers.add(evt.provider)
+            if evt.status == "error":
+                summary.error_count += 1
 
-    if latencies:
-        summary.avg_latency_ms = statistics.mean(latencies)
-        summary.p50_latency_ms = _percentile(latencies, 50)
-        summary.p95_latency_ms = _percentile(latencies, 95)
-        summary.p99_latency_ms = _percentile(latencies, 99)
-        summary.max_latency_ms = max(latencies)
+        if latencies:
+            summary.avg_latency_ms = statistics.mean(latencies)
+            summary.p50_latency_ms = _percentile(latencies, 50)
+            summary.p95_latency_ms = _percentile(latencies, 95)
+            summary.p99_latency_ms = _percentile(latencies, 99)
+            summary.max_latency_ms = max(latencies)
 
-    if summary.event_count > 0:
-        summary.error_rate = summary.error_count / summary.event_count
+        if summary.event_count > 0:
+            summary.error_rate = summary.error_count / summary.event_count
 
-    summary.models_used = sorted(models)
-    summary.providers_used = sorted(providers)
+        summary.models_used = sorted(models)
+        summary.providers_used = sorted(providers)
 
     # resource stats
     cpu_vals = [r.value for r in resources
@@ -129,6 +134,16 @@ def summarize_session(
     if net_recv:
         summary.avg_network_recv_rate = statistics.mean(net_recv)
         summary.max_network_recv_rate = max(net_recv)
+
+    # per-process resource stats
+    proc_cpu = [r.value for r in resources if r.name == "process.cpu.usage_percent"]
+    proc_rss = [r.value for r in resources if r.name == "process.memory.rss_bytes"]
+    if proc_cpu:
+        summary.avg_process_cpu_percent = statistics.mean(proc_cpu)
+        summary.max_process_cpu_percent = max(proc_cpu)
+    if proc_rss:
+        summary.avg_process_rss_bytes = statistics.mean(proc_rss)
+        summary.max_process_rss_bytes = max(proc_rss)
 
     return summary
 
