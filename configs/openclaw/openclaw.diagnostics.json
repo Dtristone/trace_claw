@@ -1,0 +1,29 @@
+{
+  "plugins": {
+    "allow": ["diagnostics-otel"],
+    "entries": {
+      "diagnostics-otel": {
+        "enabled": true
+      }
+    }
+  },
+  "diagnostics": {
+    "enabled": true,
+    "otel": {
+      "enabled": true,
+      "endpoint": "http://otel-collector:4318",
+      "protocol": "http/protobuf",
+      "serviceName": "openclaw-gateway",
+      "traces": true,
+      "metrics": true,
+      "logs": true,
+      "sampleRate": 1.0,
+      "flushIntervalMs": 10000
+    }
+  },
+  "logging": {
+    "level": "debug",
+    "consoleLevel": "info",
+    "consoleStyle": "pretty"
+  }
+}
