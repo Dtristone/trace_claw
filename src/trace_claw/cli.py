@@ -65,7 +65,14 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
 
     from .analyzer.parser import load_trace_dir
     from .analyzer.summary import save_summary, summarize_session
-    from .analyzer.timeline import build_timeline, print_timeline, save_timeline
+    from .analyzer.timeline import (
+        build_action_timeline,
+        build_timeline,
+        print_action_timeline,
+        print_timeline,
+        save_action_timeline,
+        save_timeline,
+    )
 
     events, resources = load_trace_dir(trace_dir)
 
@@ -73,7 +80,7 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
         print(f"No trace data found in {trace_dir}")
         return
 
-    print(f"Loaded {len(events)} OpenClaw events, {len(resources)} resource samples\n")
+    print(f"Loaded {len(events)} events, {len(resources)} resource samples\n")
 
     # Summary
     summary = summarize_session(events, resources)
@@ -91,15 +98,66 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
     print(f"  Avg Memory:     {summary.avg_memory_percent:.1f}%")
     print()
 
-    # Timeline
+    # Full timeline
     timeline = build_timeline(events, resources)
     timeline_path = Path(cfg.analyzer.summary_output) / "timeline.json"
     save_timeline(timeline, timeline_path)
     print(f"Timeline saved to {timeline_path} ({len(timeline)} entries)")
 
+    # Action-oriented timeline (correlates actions with resources)
+    if events:
+        action_rows = build_action_timeline(events, resources)
+        action_path = Path(cfg.analyzer.summary_output) / "action_timeline.json"
+        save_action_timeline(action_rows, action_path)
+        print(f"Action timeline saved to {action_path} ({len(action_rows)} rows)")
+
     if not args.no_table:
         print()
+        if events:
+            print_action_timeline(action_rows)
+            print()
         print_timeline(timeline)
+
+
+def _cmd_log_event(args: argparse.Namespace) -> None:
+    """Log a single LLM or tool event to a local JSONL file."""
+    cfg = load_config(args.config)
+    output_dir = cfg.local_exporter.output_dir
+
+    from .exporter.event_logger import LocalEventLogger
+
+    logger = LocalEventLogger(output_dir)
+    try:
+        if args.event_type == "llm":
+            logger.log_llm_call(
+                model=args.model or "",
+                provider=args.provider or "",
+                tokens_input=args.tokens_input or 0,
+                tokens_output=args.tokens_output or 0,
+                duration_ms=args.duration_ms or 0.0,
+                cost_usd=args.cost_usd or 0.0,
+                status=args.status or "ok",
+                error=args.error or "",
+            )
+            print(f"Logged LLM call: model={args.model or '(none)'} → {output_dir}")
+        elif args.event_type == "tool":
+            logger.log_tool_call(
+                tool_name=args.tool_name or "",
+                duration_ms=args.duration_ms or 0.0,
+                status=args.status or "ok",
+                error=args.error or "",
+            )
+            print(f"Logged tool call: tool={args.tool_name or '(none)'} → {output_dir}")
+        else:
+            logger.log_event(
+                event_type=args.event_type,
+                duration_ms=args.duration_ms or 0.0,
+                status=args.status or "ok",
+                error=args.error or "",
+            )
+            print(f"Logged event: type={args.event_type} → {output_dir}")
+    finally:
+        logger.shutdown()
 
 
 def _cmd_generate_config(args: argparse.Namespace) -> None:
@@ -180,6 +238,20 @@ def main(argv: list[str] | None = None) -> None:
     gen_p = sub.add_parser("generate-config", help="Generate OpenClaw diagnostics configuration")
     gen_p.add_argument("--output", "-o", default=None, help="Output file path")
     gen_p.set_defaults(func=_cmd_generate_config)
+
+    # log-event
+    log_p = sub.add_parser("log-event", help="Log an LLM/tool event to local JSONL file")
+    log_p.add_argument("event_type", help="Event type: 'llm', 'tool', or custom type")
+    log_p.add_argument("--model", default=None, help="LLM model name (for llm events)")
+    log_p.add_argument("--provider", default=None, help="LLM provider (for llm events)")
+    log_p.add_argument("--tool-name", default=None, help="Tool name (for tool events)")
+    log_p.add_argument("--tokens-input", type=int, default=None, help="Input tokens")
+    log_p.add_argument("--tokens-output", type=int, default=None, help="Output tokens")
+    log_p.add_argument("--duration-ms", type=float, default=None, help="Duration in milliseconds")
+    log_p.add_argument("--cost-usd", type=float, default=None, help="Cost in USD")
+    log_p.add_argument("--status", default=None, help="Status (ok or error)")
+    log_p.add_argument("--error", default=None, help="Error message")
+    log_p.set_defaults(func=_cmd_log_event)
 
     # version
     ver_p = sub.add_parser("version", help="Print version")

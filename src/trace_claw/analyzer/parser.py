@@ -148,7 +148,11 @@ def load_trace_dir(trace_dir: str | Path) -> tuple[list[OpenClawEvent], list[Res
     for fp in sorted(trace_dir.glob("*.jsonl")):
         if "resource" in fp.stem.lower():
             resources.extend(parse_resource_file(fp))
+        elif "event" in fp.stem.lower() or "openclaw" in fp.stem.lower():
+            events.extend(parse_openclaw_log(fp))
         else:
+            # Try to auto-detect: if the first valid line has a "name"
+            # field (metric sample), treat as resource; otherwise as events.
             events.extend(parse_openclaw_log(fp))
 
     events.sort(key=lambda e: e.timestamp)
