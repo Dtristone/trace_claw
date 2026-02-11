@@ -1,4 +1,8 @@
 # trace_claw
+      model: hosted_vllm/Kimi-K2
+      api_base: https://api.modelarts-maas.com/v1
+vIQebl-PdNDntdJfT6Zj3xSjI7MZGey6UxcHza3ssCiZW8D-_KSxTn4uc2JWv29k-GpJBCpN4IYj84C3dbpuZQ
+
 
 Trace and analyze [OpenClaw](https://github.com/openclaw/openclaw) AI assistant workflows with aligned system resource monitoring.
 
