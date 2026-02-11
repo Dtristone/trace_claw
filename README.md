@@ -95,7 +95,61 @@ trace_claw provides:
 pip install -e .
 ```
 
-### 2. Generate OpenClaw diagnostics config
+### 2. Fully local workflow (no Docker / no servers)
+
+trace_claw works entirely locally – no OpenTelemetry Collector, Docker, Prometheus or Grafana needed.
+
+**a) Log LLM/tool events locally** (via CLI or Python API):
+
+```bash
+# Log an LLM call
+trace-claw log-event llm --model gpt-4 --provider openai \
+    --tokens-input 100 --tokens-output 50 --duration-ms 1200 --cost-usd 0.005
+
+# Log a tool invocation
+trace-claw log-event tool --tool-name web_search --duration-ms 350
+
+# Log another LLM call
+trace-claw log-event llm --model claude-3 --provider anthropic \
+    --tokens-input 200 --tokens-output 100 --duration-ms 800 --cost-usd 0.003
+```
+
+Or use the Python API directly:
+
+```python
+from trace_claw.exporter.event_logger import LocalEventLogger
+
+logger = LocalEventLogger("./trace_data")
+logger.log_llm_call(model="gpt-4", provider="openai",
+                     tokens_input=100, tokens_output=50,
+                     duration_ms=1200, cost_usd=0.005)
+logger.log_tool_call(tool_name="web_search", duration_ms=350)
+logger.shutdown()
+```
+
+**b) Collect system resources** (in a separate terminal while your app runs):
+
+```bash
+trace-claw -c configs/trace_claw.yaml collect
+```
+
+This writes JSONL files to `./trace_data/` with CPU, memory, network and per-process metrics.
+
+**c) Analyze and view the action timeline:**
+
+```bash
+trace-claw analyze --trace-dir ./trace_data
+```
+
+Output includes:
+- **Session summary** – model calls, tokens, cost, latency percentiles, error rate, resource peaks
+- **Action timeline** – each LLM/tool action with correlated resource snapshots:
+  `[action(llm/tool), time, tokens, cpu%, mem%, proc_cpu%, proc_rss]`
+- **Full timeline** – all events and resource samples on a unified time axis
+
+### 3. With OpenClaw (optional)
+
+If you use OpenClaw, generate its diagnostics config:
 
 ```bash
 trace-claw generate-config -o openclaw.diagnostics.json
@@ -108,23 +162,7 @@ openclaw plugins enable diagnostics-otel
 openclaw gateway restart
 ```
 
-### 3. Collect system resources (local mode)
-
-```bash
-trace-claw -c configs/trace_claw.yaml collect
-```
-
-This writes JSONL files to `./trace_data/` while OpenClaw is running.
-
-### 4. Analyze traces
-
-Copy OpenClaw log files (from `/tmp/openclaw/openclaw-*.log`) into the same `trace_data/` directory, then:
-
-```bash
-trace-claw analyze --trace-dir ./trace_data
-```
-
-Output includes a summary report and a unified timeline table in the terminal.
+Copy OpenClaw log files (from `/tmp/openclaw/openclaw-*.log`) into the same `trace_data/` directory, then analyze as above.
 
 ---
 
@@ -245,6 +283,7 @@ trace-claw [--config <path>] <command>
 Commands:
   collect          Start system resource collection
   analyze          Analyze trace data and generate timeline
+  log-event        Log an LLM/tool event to local JSONL file
   generate-config  Generate OpenClaw diagnostics configuration
   version          Print version
 ```
@@ -258,7 +297,12 @@ trace-claw collect
 # Collect with custom config
 trace-claw -c configs/trace_claw.yaml collect
 
-# Analyze trace data
+# Log LLM and tool events locally
+trace-claw log-event llm --model gpt-4 --tokens-input 100 --tokens-output 50 --duration-ms 1200
+trace-claw log-event tool --tool-name web_search --duration-ms 350
+trace-claw log-event llm --model claude-3 --tokens-input 200 --tokens-output 100 --duration-ms 800
+
+# Analyze trace data (shows action timeline + full timeline)
 trace-claw analyze --trace-dir ./trace_data
 
 # Analyze without rich table output (e.g. for piping)
@@ -292,19 +336,22 @@ trace-claw version
 | Module | Class | Key function | Description |
 |--------|-------|-------------|-------------|
 | `local.py` | `LocalExporter` | `export(samples)` | Writes metric samples to daily JSONL files |
+| `event_logger.py` | `LocalEventLogger` | `log_llm_call()`, `log_tool_call()`, `log_event()` | Writes LLM/tool action events to daily JSONL files (fully local, no servers) |
 | `otel.py` | `OtelExporter` | `export(samples)` | Pushes metrics as OTel gauge observations via OTLP/HTTP |
 
 ### Analyzer (`src/trace_claw/analyzer/`)
 
 | Module | Function | Description |
 |--------|----------|-------------|
-| `parser.py` | `parse_openclaw_log(path)` | Parse OpenClaw JSONL log → `list[OpenClawEvent]` |
+| `parser.py` | `parse_openclaw_log(path)` | Parse OpenClaw/event JSONL log → `list[OpenClawEvent]` |
 | `parser.py` | `parse_resource_file(path)` | Parse trace_claw JSONL → `list[ResourceSample]` |
 | `parser.py` | `load_trace_dir(dir)` | Scan directory, auto-classify files, return `(events, resources)` |
 | `summary.py` | `summarize_session(events, resources)` | Compute latency percentiles, token counts, cost, error rate, resource peaks (system + process) |
 | `summary.py` | `summarize_multi_session(sessions)` | Aggregate stats across multiple sessions |
 | `timeline.py` | `build_timeline(events, resources)` | Merge events + resources into a unified `TimelineEntry` list sorted by time |
-| `timeline.py` | `print_timeline(entries)` | Pretty-print to terminal with Rich |
+| `timeline.py` | `build_action_timeline(events, resources)` | Build action-oriented timeline correlating each LLM/tool action with nearby resource snapshots |
+| `timeline.py` | `print_timeline(entries)` | Pretty-print full timeline to terminal with Rich |
+| `timeline.py` | `print_action_timeline(rows)` | Pretty-print action timeline: `[action, time, tokens, cpu%, mem%, ...]` |
 
 ### Configuration (`src/trace_claw/config.py`)
 
@@ -345,7 +392,8 @@ trace_claw/
 │   ├── exporter/               # Data exporters
 │   │   ├── base.py             # BaseExporter interface
 │   │   ├── otel.py             # OTLP/HTTP exporter
-│   │   └── local.py            # JSONL file exporter
+│   │   ├── local.py            # JSONL file exporter (resources)
+│   │   └── event_logger.py     # JSONL event logger (LLM/tool actions, fully local)
 │   └── analyzer/               # Trace analysis
 │       ├── parser.py           # Parse OpenClaw + resource files
 │       ├── summary.py          # Session/multi-session statistics
@@ -361,6 +409,7 @@ trace_claw/
 │   ├── test_config.py          # Config loading tests
 │   ├── test_collector.py       # Collector unit tests
 │   ├── test_analyzer.py        # Analyzer unit tests
+│   ├── test_local_tracing.py   # Local event logger + action timeline tests
 │   └── test_e2e.py             # End-to-end functional tests
 └── pyproject.toml              # Python packaging
 ```

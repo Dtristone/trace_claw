@@ -171,11 +171,15 @@ def build_action_timeline(
     timestamps = [e.timestamp for e in events] + [r.timestamp for r in resources]
     t0 = min(timestamps)
 
-    # Index resources by metric name for fast lookup
+    # Index resources by metric name for fast lookup.
+    # For system.cpu.usage_percent, only include the "total" aggregate.
     from bisect import bisect_left, bisect_right
 
     resource_by_name: dict[str, list[tuple[float, float]]] = {}
     for r in resources:
+        # Skip per-core CPU entries; keep only cpu=total
+        if r.name == "system.cpu.usage_percent" and r.labels.get("cpu") != "total":
+            continue
         resource_by_name.setdefault(r.name, []).append((r.timestamp, r.value))
     for v in resource_by_name.values():
         v.sort()
@@ -204,19 +208,6 @@ def build_action_timeline(
             action = f"tool:{tool_name}" if tool_name else "tool"
         else:
             action = evt.event_type
-
-        # Look up nearest resource snapshots
-        cpu_vals = [
-            v for k, series in resource_by_name.items()
-            if k == "system.cpu.usage_percent"
-            for ts_val, v in series
-            if abs(ts_val - evt.timestamp) <= window_seconds
-            and any(
-                r.labels.get("cpu") == "total"
-                for r in resources
-                if r.name == k and r.timestamp == ts_val
-            )
-        ]
 
         row = ActionTimelineRow(
             timestamp=evt.timestamp,
